@@ -136,6 +136,7 @@ mark {
   background: var(--sun); color: var(--on-sun); cursor: pointer;
   box-shadow: 2px 2px 0 var(--shadow);
 }
+.btn.ghost { background: var(--card); color: var(--ink); }
 
 /* ---------- การ์ดค่า + กราฟ ---------- */
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px; }
@@ -206,6 +207,31 @@ mark {
 }
 .tip b { font: 700 16px/1.3 "Prompt", "Sarabun", sans-serif; }
 .tip span { font-size: 12px; color: var(--ink-2); }
+
+/* ---------- ตารางข้อมูล ---------- */
+.tcard { margin-top: 26px; padding-bottom: 20px; }
+.thead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-bottom: 14px; }
+.thead h2 { margin: 0; font: 600 18px/1.3 "Prompt", "Sarabun", sans-serif; }
+.thead h2 small { font: 400 14px "Sarabun", sans-serif; color: var(--ink-2); margin-left: 6px; }
+.tscroll {
+  max-height: 440px; overflow: auto;
+  border: 2px solid var(--line); border-radius: 14px;
+}
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 10px 16px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--sun); color: var(--on-sun);
+  font: 600 14px/1.3 "Prompt", "Sarabun", sans-serif;
+  border-bottom: 2px solid var(--line);
+}
+tbody tr:nth-child(even) { background: var(--blue-soft); }
+tbody tr:first-child td { font-weight: 600; }
+td.t { color: var(--pink-ink); font-weight: 500; }
+td.h { color: var(--blue-ink); font-weight: 500; }
+.tnone { text-align: center !important; color: var(--ink-2); padding: 28px 16px; }
+.tmore { display: flex; justify-content: center; margin-top: 16px; }
 
 /* ---------- ท้ายหน้า ---------- */
 .foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px 24px; margin-top: 40px; }
@@ -302,6 +328,22 @@ mark {
     </article>
   </main>
 
+  <section class="card tcard" aria-labelledby="tTitle">
+    <div class="thead">
+      <h2 id="tTitle">ตารางข้อมูล<small id="tCount"></small></h2>
+      <button class="btn ghost" type="button" id="csvBtn">⬇ ดาวน์โหลด CSV</button>
+    </div>
+    <div class="tscroll" tabindex="0" role="region" aria-label="ตารางอุณหภูมิและความชื้น เรียงจากใหม่ไปเก่า">
+      <table>
+        <thead>
+          <tr><th scope="col">เวลา</th><th scope="col">อุณหภูมิ (°C)</th><th scope="col">ความชื้น (%)</th></tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="tmore"><button class="btn" type="button" id="moreBtn" hidden>ดูเพิ่ม</button></div>
+  </section>
+
   <footer class="foot">
     <ol class="flow" aria-label="เส้นทางของข้อมูล">
       <li><span>ESP32 + DHT11</span></li>
@@ -323,6 +365,7 @@ mark {
   const GAP_MS = 4 * 60000;      // ขาดช่วงเกิน 4 นาที = ตัดเส้น (ESP32 หลุดหรือดับ)
   const STALE_MS = 5 * 60000;    // เกิน 5 นาทีไม่มีข้อมูลใหม่ = แจ้งว่าหยุดส่ง
   const REFRESH_MS = 30000;
+  const PAGE = 30;               // จำนวนแถวที่โชว์ในตารางต่อครั้ง
 
   const RANGES = {
     60:   { label: '1 ชม.',  tick: 10 * 60000 },
@@ -339,8 +382,13 @@ mark {
   const $ = (s, r = document) => r.querySelector(s);
   const tFmt = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
   const dFmt = new Intl.DateTimeFormat('th-TH', { timeZone: TZ, day: 'numeric', month: 'short' });
+  // รูปแบบเดียวกับชีต: 01/11/2026, 21:27:05
+  const fullFmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: TZ, day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  });
 
-  let minutes = 60, rows = [], last = null, err = null, loading = true, reqId = 0;
+  let minutes = 60, rows = [], last = null, err = null, loading = true, reqId = 0, shown = PAGE;
   try { const v = Number(localStorage.getItem('th-range')); if (RANGES[v]) minutes = v; } catch (e) {}
 
   /* ---------- ช่วยคำนวณ ---------- */
@@ -497,6 +545,36 @@ mark {
     host.addEventListener('pointerleave', hide);
   }
 
+  /* ---------- ตารางข้อมูล ---------- */
+  function renderTable() {
+    const list = rows.filter(r => Number.isFinite(r.temp) && Number.isFinite(r.hum)).slice().reverse(); // ใหม่ → เก่า
+    const body = $('#tbody');
+    $('#tCount').textContent = list.length ? `(${list.length} รายการ · ${RANGES[minutes].label}ล่าสุด)` : '';
+    if (!list.length) {
+      body.innerHTML = `<tr><td class="tnone" colspan="3">${loading ? 'กำลังโหลดข้อมูล…' : 'ไม่มีข้อมูลในช่วงนี้'}</td></tr>`;
+      $('#moreBtn').hidden = true;
+      $('#csvBtn').disabled = true;
+      return;
+    }
+    $('#csvBtn').disabled = false;
+    body.innerHTML = list.slice(0, shown).map(r =>
+      `<tr><td>${fullFmt.format(r.t).replace(',', '')}</td><td class="t">${r.temp.toFixed(1)}</td><td class="h">${Math.round(r.hum)}</td></tr>`
+    ).join('');
+    $('#moreBtn').hidden = shown >= list.length;
+  }
+
+  function downloadCsv() {
+    const list = rows.filter(r => Number.isFinite(r.temp) && Number.isFinite(r.hum)).slice().reverse();
+    const lines = ['เวลา,อุณหภูมิ (°C),ความชื้น (%)']
+      .concat(list.map(r => `"${fullFmt.format(r.t).replace(',', '')}",${r.temp},${r.hum}`));
+    const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `temp_humidity_${RANGES[minutes].label.replace(/\s/g, '')}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
   /* ---------- แสดงผล ---------- */
   function renderStatus() {
     const chip = $('#status'), txt = $('#statusText');
@@ -524,6 +602,7 @@ mark {
     renderStatus();
     $('#notice').hidden = !(err && !rows.length);
     METRICS.forEach(renderMetric);
+    renderTable();
   }
 
   /* ---------- เริ่มทำงาน ---------- */
@@ -534,9 +613,11 @@ mark {
   document.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => {
     minutes = Number(b.dataset.range);
     try { localStorage.setItem('th-range', String(minutes)); } catch (e) {}
-    setPressed(); rows = []; loading = true; render(); load();
+    setPressed(); rows = []; shown = PAGE; loading = true; render(); load();
   }));
   $('#retry').addEventListener('click', () => { loading = true; render(); load(); });
+  $('#moreBtn').addEventListener('click', () => { shown += PAGE; renderTable(); });
+  $('#csvBtn').addEventListener('click', downloadCsv);
 
   METRICS.forEach(m => {
     const host = $(`.metric[data-key="${m.key}"] .chart`);
